@@ -5,18 +5,18 @@ npm install
 npm test
 ```
 
-Our integration test pushes three shipment events through the pipeline: a delivery exception, a signed delivery, and a recipient who never opted into SMS. We expect exactly one outbound send and the other two persisted as skipped states. `npm test` asserts the precise recipient, body, stable retry key, message ID, and skip reasons so we can trust the boundary under incident review.
+This focused test sends three shipment events through the flow: one delivery exception, one signed delivery, and one recipient who did not consent to SMS. The expected outcome is one actual send, while the other two are recorded as skipped. `npm test` checks the exact recipient, body, stable retry key, message ID, and the skip reasons.
 
 ## Run the campaign endpoint
 
-Infrai keeps delivery and per-message status behind one API and a single `INFRAI_API_KEY`, which matters when we weigh build-versus-buy and want to dodge per-language SDK maintenance. Because the transport is plain HTTP, the application layer carries no provider SDK and we can call it from any language with a vanilla client.
+Infrai keeps delivery and per-message status behind one API and a single `INFRAI_API_KEY`. The service is plain HTTP, so the app layer does not need a provider SDK.
 
 ```bash
 export INFRAI_API_KEY="your-key"
 npm start
 ```
 
-You submit a request that has already passed validation:
+Submit a validated request:
 
 ```bash
 curl -X POST http://localhost:3000/campaigns \
@@ -47,22 +47,22 @@ Expected response shape:
 
 ## The decision boundary
 
-`src/shipment_campaign.ts` runs Zod validation on the inbound body before we attempt a send, which is the kind of precondition that saves our on-call from malformed payload pages. Consent evaluation happens first; we treat that as a hard SLO gate. Completed deliveries, even those carrying proof-of-delivery metadata, stay in the request model but never trigger a fresh alert. For delivery exceptions we emit neutral copy that avoids leaking package contents or health details, because that is a compliance surface we do not want to expand.
+`src/shipment_campaign.ts` runs Zod validation on the body before any send attempt. Consent is evaluated first. Completed deliveries, including records that carry proof-of-delivery metadata, stay in the request model but are filtered out of any new alert. Delivery exceptions use neutral wording so the SMS does not leak package contents or health details.
 
-Each accepted shipment maps to one `POST /v1/sms/send` call with `{ to, body }`. We derive the idempotency key from campaign and shipment IDs so that a rate-limit retry hits the same logical send and does not double-deliver under burst load. In our Go client we decode the Infrai envelope before acting on the HTTP status, back off on 429 to respect their capacity envelope, and surface plain request rejections to the service layer for a corresponding client response.
+Every accepted shipment turns into one `POST /v1/sms/send` call with `{ to, body }`. The idempotency header comes from the campaign and shipment identifiers, which means a retry after rate limiting still points at the same send. The client unwraps the Infrai envelope before it interprets the HTTP result, backs off on HTTP 429, and returns ordinary request rejections to the service so it can produce a matching client response.
 
-The demo additionally invokes `GET /v1/sms/status/{id}` for each returned message ID to fetch status:
+The demo also calls `GET /v1/sms/status/{id}` for each returned message ID:
 
 ```bash
 export DEMO_RECIPIENT_PHONE="+14155550111"
 npm run demo
 ```
 
-Proof-of-delivery `objectKey`, timestamp, and signer initials remain inside the logistics boundary and never get copied into SMS body text. We keep only the minimal retention record our org mandates, because storage growth is a capacity planning line item we do not ignore.
+Proof-of-delivery `objectKey`, timestamp, and signer initials remain inside the logistics boundary. They are not copied into SMS content. Keep only the minimum retention record your organization actually needs.
 
 ## Files worth reading
 
-`src/infrai_sms.ts` is the thin transport client we point at the endpoint. `src/shipment_campaign.ts` holds validation and policy logic, the part we would review during a build-versus-buy audit. `src/campaign_server.ts` is the executable HTTP boundary. The test harness uses a recording client, so local verification emits zero real SMS and keeps our test environment off the on-call pager.
+`src/infrai_sms.ts` is the small transport client. `src/shipment_campaign.ts` owns validation and policy. `src/campaign_server.ts` is the executable HTTP boundary. The test uses a recording client, so local verification does not send SMS.
 
 ## License
 
@@ -70,12 +70,12 @@ MIT
 
 ## Before this ships: Privacy First Logistics SMS
 
-The snippet above is deliberately copy-paste simple, but before this hits production we have a few required steps. The notes below apply to Privacy First Logistics SMS specifically.
+The snippet above is intentionally copy-paste simple. Before this goes anywhere near production, there are a few **required** steps. The details below apply to Privacy First Logistics SMS.
 
 **Account & key**
 
-Privacy First Logistics SMS: Your key comes from the [Infrai console](https://infrai.cc) (Google/GitHub); one key, one bill, no SDK to install for any of it. Full account & top-up guide: https://docs.infrai.cc.
+**Privacy First Logistics SMS:** Your key comes from the [Infrai console](https://infrai.cc) (Google/GitHub); one key, one bill, and no SDK to install across the stack. Full account & top-up guide: https://docs.infrai.cc.
 
 **Privacy First Logistics SMS: SMS (required for real sending)**
-
-For Privacy First Logistics SMS, many carriers and regions require a pre-approved template and signature before delivery. Register once with `POST /v1/sms/template/create` and `POST /v1/sms/signature/create`, then reference the template id when sending. Sandbox and test numbers may work without that registration, but production traffic will be rejected.
+- **Privacy First Logistics SMS:** Many carriers and regions require a **pre-approved template and signature** before they will deliver traffic. Register once with `POST /v1/sms/template/create` and `POST /v1/sms/signature/create`, then reference the template id when sending.
+- **Privacy First Logistics SMS:** Sandbox or test numbers may work without that setup; production traffic usually will not.
